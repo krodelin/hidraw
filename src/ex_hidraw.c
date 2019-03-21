@@ -36,9 +36,35 @@
 static const char notification_id = 'n';
 static const char descriptor_id = 'd';
 static const char error_id = 'e';
+static const char output_id = 'o';
 
-void device_handle_request(const char *req, void *cookie) {
-  debug("Erl sent data");
+void device_handle_request(const char *buf, void *cookie) {
+    int index, version, arity, fd;
+    char action[256];
+    char message[256];
+    long len;
+    debug("Erl sent data");
+
+    index = sizeof(uint16_t);
+    ei_decode_version(buf, &index, &version);
+    ei_decode_tuple_header(buf, &index, &arity);
+    ei_decode_atom(buf, &index, action);
+    ei_decode_binary(buf, &index, message, &len);
+
+    if (strcmp(action, "output") == 0) {
+        fd = *(int *) cookie;
+
+        size_t wrote = 0;
+        do {
+            ssize_t amount_written = write(fd, message + wrote, len - wrote);
+            if (amount_written < 0) {
+                if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+                    continue;
+                err(EXIT_FAILURE, "write");
+            }
+            wrote += amount_written;
+        } while (wrote < len);
+    }
 }
 
 void device_process(int fd) {

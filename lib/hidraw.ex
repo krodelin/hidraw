@@ -30,6 +30,10 @@ defmodule Hidraw do
     GenServer.call(pid, :report_desc, timeout)
   end
 
+  def output(pid, data) do
+    GenServer.cast(pid, {:output, data})
+  end
+
   def init([fd, caller]) do
     executable = :code.priv_dir(:hidraw) ++ '/ex_hidraw'
 
@@ -49,6 +53,11 @@ defmodule Hidraw do
 
   def handle_call(:report_desc, _from, s) do
     {:reply, {:ok, s.report_desc}, s}
+  end
+
+  def handle_cast({:output, data},  %{port: port} = s) do
+    send(port, {self(), {:command, data}})
+    {:noreply, s}
   end
 
   def handle_info({_, {:data, <<?n, message::binary>>}}, state) do
