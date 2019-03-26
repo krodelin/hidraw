@@ -9,15 +9,18 @@ defmodule Hidraw do
     executable = :code.priv_dir(:hidraw) ++ '/ex_hidraw'
 
     port =
-      Port.open({:spawn_executable, executable}, [
-        {:args, ["enumerate"]},
-        {:packet, 2},
-        :use_stdio,
-        :binary
-      ])
+      Port.open(
+        {:spawn_executable, executable},
+        [
+          {:args, ["enumerate"]},
+          {:packet, 2},
+          :use_stdio,
+          :binary
+        ]
+      )
 
     receive do
-      {^port, {:data, <<?r, message::binary>>}} ->
+      {^port, {:data, <<?r, message :: binary>>}} ->
         :erlang.binary_to_term(message)
     after
       5_000 ->
@@ -26,55 +29,67 @@ defmodule Hidraw do
     end
   end
 
-  def report_descriptor(pid, timeout \\ 5000) do
-    GenServer.call(pid, :report_desc, timeout)
+  def descriptor(pid) do
+    GenServer.call(pid, :descriptor)
   end
 
-  def output(pid, data) do
-    GenServer.cast(pid, {:output, data})
+  def output(pid, binary) do
+    GenServer.cast(pid, {:output, binary})
   end
 
   def init([fd, caller]) do
     executable = :code.priv_dir(:hidraw) ++ '/ex_hidraw'
 
     port =
-      Port.open({:spawn_executable, executable}, [
-        {:args, [fd]},
-        {:packet, 2},
-        :use_stdio,
-        :binary,
-        :exit_status
-      ])
+      Port.open(
+        {:spawn_executable, executable},
+        [
+          {:args, [fd]},
+          {:packet, 2},
+          :use_stdio,
+          :binary,
+          :exit_status
+        ]
+      )
 
-    state = %{port: port, name: fd, callback: caller, buffer: [], report_desc: nil}
+    send(port, {self(), {:command, <<?d>>}})
+    descriptor = receive do
+      {^port, {:data, <<?d, message :: binary>>}} ->
+        :erlang.binary_to_term(message)
+    end
+
+    state = %{port: port, name: fd, callback: caller, descriptor: descriptor}
 
     {:ok, state}
   end
 
-  def handle_call(:report_desc, _from, s) do
-    {:reply, {:ok, s.report_desc}, s}
+  def handle_call(:descriptor, _from, %{descriptor: descriptor} = state) do
+    {:reply, {:ok, descriptor}, state}
   end
 
-  def handle_cast({:output, data},  %{port: port} = s) do
-    send(port, {self(), {:command, data}})
-    {:noreply, s}
+  def handle_cast({:output, binary}, %{port: port} = state) do
+    message = :erlang.term_to_binary(binary)
+    send(port, {self(), {:command, <<?o, message :: binary>>}})
+    {:noreply, state}
   end
 
-  def handle_info({_, {:data, <<?n, message::binary>>}}, state) do
-    msg = :erlang.binary_to_term(message)
-    handle_port(msg, state)
+
+  def handle_info({_, {:data, <<?i, message :: binary>>}}, state) do
+    input_report = :erlang.binary_to_term(message)
+    send(state.callback, {:hidraw, state.name, {:input_report, input_report}})
+    {:noreply, state}
   end
 
-  def handle_info({_, {:data, <<?d, message::binary>>}}, state) do
-    {:descriptor, descriptor} = :erlang.binary_to_term(message)
-    send(state.callback, {:hidraw, state.name, {:report_descriptor, descriptor}})
-    {:noreply, %{state | report_desc: descriptor}}
+  def _handle_info({_, {:data, <<?d, message :: binary>>}}, state) do
+    descriptor_report = :erlang.binary_to_term(message)
+    send(state.callback, {:hidraw, state.name, {:descriptor_report, descriptor_report}})
+    {:noreply, state}
   end
 
-  def handle_info({_, {:data, <<?e, message::binary>>}}, state) do
-    error = :erlang.binary_to_term(message)
-    send(state.callback, {:hidraw, state.name, error})
-    {:stop, error, state}
+  def handle_info({_, {:data, <<?e, message :: binary>>}}, state) do
+    {:error, reason} = :erlang.binary_to_term(message)
+    send(state.callback, {:hidraw, state.name, {:error, reason}})
+    {:stop, reason, state}
   end
 
   def handle_info({_, {:exit_status, status}}, state) do
@@ -82,8 +97,4 @@ defmodule Hidraw do
     {:stop, {:exit, status}, state}
   end
 
-  defp handle_port({:data, value}, state) do
-    send(state.callback, {:hidraw, state.name, value})
-    {:noreply, state}
-  end
 end
